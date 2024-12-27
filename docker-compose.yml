@@ -1,0 +1,213 @@
+version: '3.1'
+
+x-airflow-common:
+  &airflow-common
+  build:
+    context: .
+    dockerfile: containers/airflow-spark/Dockerfile
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-metastore/airflow
+    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__API__AUTH_BACKEND: 'airflow.api.auth.backend.basic_auth'
+    AIRFLOW_CONN_POSTGRES_DEFAULT: postgres://airflow:airflow@postgres-metastore:5432/airflow
+  networks:
+    - common
+
+  volumes:
+    - ./dags:/opt/airflow/dags
+  user: "${AIRFLOW_UID:-50000}:${AIRFLOW_GID:-50000}"
+  depends_on:
+    postgres-metastore:
+      condition: service_healthy
+
+services:
+  mysql-olpt:
+    image: mysql:8.0.29
+    container_name: mysql-oltp
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./sql/oltpSchema.sql:/docker-entrypoint-initdb.d/otlpSchema.sql
+      - mysql-olpt-data:/var/lib/mysql
+    networks:
+      - common
+
+#  adminer:
+#    image: adminer
+#    container_name: adminer
+#    ports:
+#      - "8080:8080"
+#    networks:
+#      - common
+
+  hadoop-namenode:
+    image: hbase:test
+    container_name: hadoop-namenode
+    hostname: hadoop-namenode
+    ports:
+      - 9870:9870
+      - 8088:8088
+      - 19888:19888
+    environment:
+      - CLUSTER_NAME=hadoop-cluster
+    networks:
+      - common
+    depends_on:
+      - hadoop-datanode01
+      - hadoop-datanode02
+    volumes:
+      - namenode-data:/hadoop/dfs/name
+    command: /bin/sh -c "/start-cluster.sh"
+
+  hadoop-datanode01:
+    image: hbase:test
+    container_name: hadoop-datanode01
+    hostname: hadoop-datanode01
+    environment:
+      - "HADOOP_MASTER=hadoop-namenode"
+    networks:
+      - common
+    volumes:
+      - datanode01-data:/hadoop/dfs/data
+    command: /bin/sh -c "/start.sh"
+
+  hadoop-datanode02:
+    image: hbase:test
+    container_name: hadoop-datanode02
+    hostname: hadoop-datanode02
+    environment:
+      - "HADOOP_MASTER=hadoop-namenode"
+    networks:
+      - common
+    volumes:
+      - datanode02-data:/hadoop/dfs/data
+    command: /bin/sh -c "/start.sh"
+
+  spark-history-server:
+    build:
+      context: .
+      dockerfile: containers/spark-history-server/Dockerfile
+    container_name: spark-airflow
+    hostname: spark-airflow
+    ports:
+      - 18080:18080
+    networks:
+      - common
+
+
+  postgres-metastore:
+    image: postgres:13
+    container_name: postgres-metastore
+    environment:
+      - POSTGRES_PASSWORD=root
+    ports:
+      - 5432:5432
+    healthcheck:
+      test: [ "CMD", "pg_isready", "-U", "airflow" ]
+      interval: 5s
+      retries: 5
+    restart: always
+    volumes:
+      - ./sql/postgreInit.sql:/docker-entrypoint-initdb.d/postgreInit.sql
+      - postgres-metastore-data:/var/lib/postgresql/data
+    networks:
+      - common
+
+  hive:
+    build:
+      context: .
+      dockerfile: containers/hive/Dockerfile
+    container_name: hive
+    hostname: hiveserver
+    ports:
+      - 10002:10002
+    depends_on:
+      - postgres-metastore
+    networks:
+      - common
+
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: webserver
+    command: webserver
+    ports:
+      - 8081:8080
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "--fail",
+          "http://localhost:8080/health"
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    restart: always
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: scheduler
+    command: scheduler
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"'
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    restart: always
+
+  airflow-init:
+    <<: *airflow-common
+    command: version
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_UPGRADE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
+  dashboard:
+    image: metabase/metabase
+    container_name: dashboard
+    environment:
+      MB_DB_CONNECTION_TIMEOUT_MS: 30000
+      MB_DB_SOCKET_TIMEOUT_MS: 60000
+    ports:
+      - "3000:3000"
+    networks:
+      - common
+
+#  airflow:
+#    build:
+#      context: .
+#      dockerfile: containers/airflow-spark/Dockerfile
+#    container_name: airflow
+#    hostname: airflow
+#    ports:
+#      - 8081:8080
+#    volumes:
+#      - ./dags:/opt/airflow/dags
+#    networks:
+#      - common
+
+volumes:
+  mysql-olpt-data:
+  datanode01-data:
+  datanode02-data:
+  namenode-data:
+  postgres-metastore-data:
+
+networks:
+  common:
+    driver: bridge
+  
