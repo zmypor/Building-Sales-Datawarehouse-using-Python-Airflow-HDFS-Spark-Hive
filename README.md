@@ -34,13 +34,13 @@
 1. Clone project repository
 
 ```bash
-git clone <link.com>
+git clone [<link.com>](https://github.com/zmypor/Building-Sales-Datawarehouse-using-Python-Airflow-HDFS-Spark-Hive-Docker.git)
 ```
 
 2. Navigate to project directory
 
 ```bash
-cd SalesDatawarehouse
+cd Building-Sales-Datawarehouse-using-Python-Airflow-HDFS-Spark-Hive-Docker
 ```
 
 3. Build hbase docker image
